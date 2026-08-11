@@ -6,6 +6,12 @@
   "observability": {
     "enabled": true
   },
+  "vars": {
+    "MAX_STORAGE_BYTES": "9663676416"
+  },
+  "triggers": {
+    "crons": ["43 * * * *"]
+  },
   "r2_buckets": [
     { "binding": "FILES", "bucket_name": "upload-thing-files" }
   ],

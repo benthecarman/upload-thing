@@ -69,10 +69,19 @@ Old CLI binaries stop working once the secret is replaced.
 | PUT    | `/multipart/part`           | Bearer token  | `{ "etag": ... }`         |
 | POST   | `/multipart/complete`       | Bearer token  | `{ "url": ..., "key": ... }` |
 | POST   | `/multipart/abort`          | Bearer token  | `{ "aborted": ... }`      |
+| POST   | `/cleanup`                  | Bearer token  | `{ "totalBytes": ..., "deleted": ... }` |
 
 Single-request uploads are limited to ~100 MB by the Cloudflare zone. The CLI
 uploads larger files in 50 MB chunks through the multipart endpoints, so files
 of 500 MB and more work (R2 allows up to 5 TiB per object).
+
+## Storage cleanup
+
+An hourly cron trigger keeps the bucket under `MAX_STORAGE_BYTES` (default
+9 GiB, set in `worker/wrangler.jsonc`). When the total size is over the limit,
+the Worker deletes the oldest files first until it is back under. This keeps
+usage inside the R2 free tier (10 GB). You can also run a cleanup on demand
+with an authenticated `POST /cleanup`.
 
 ## Cost
 

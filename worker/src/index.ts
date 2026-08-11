@@ -197,6 +197,41 @@ async function handleMultipartAbort(
   return Response.json({ aborted: body.key });
 }
 
+/// Deletes the oldest files until the bucket is back under MAX_STORAGE_BYTES.
+/// Runs hourly from the cron trigger; also reachable through POST /cleanup.
+async function cleanup(env: Env): Promise<{ totalBytes: number; deleted: number }> {
+  const maxBytes = Number(env.MAX_STORAGE_BYTES);
+  const objects: R2Object[] = [];
+  let cursor: string | undefined;
+  do {
+    const page = await env.FILES.list({ cursor, limit: 1000 });
+    objects.push(...page.objects);
+    cursor = page.truncated ? page.cursor : undefined;
+  } while (cursor);
+
+  let totalBytes = objects.reduce((sum, o) => sum + o.size, 0);
+  let deleted = 0;
+  if (totalBytes > maxBytes) {
+    objects.sort((a, b) => a.uploaded.getTime() - b.uploaded.getTime());
+    for (const object of objects) {
+      if (totalBytes <= maxBytes) break;
+      await env.FILES.delete(object.key);
+      totalBytes -= object.size;
+      deleted += 1;
+    }
+  }
+  return { totalBytes, deleted };
+}
+
+async function handleCleanup(request: Request, env: Env): Promise<Response> {
+  if (!(await isAuthorized(request, env))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const result = await cleanup(env);
+  console.log(JSON.stringify({ message: "cleanup", ...result }));
+  return Response.json(result);
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
@@ -219,6 +254,9 @@ export default {
       if (request.method === "POST" && url.pathname === "/multipart/abort") {
         return await handleMultipartAbort(request, env);
       }
+      if (request.method === "POST" && url.pathname === "/cleanup") {
+        return await handleCleanup(request, env);
+      }
       if (
         (request.method === "GET" || request.method === "HEAD") &&
         url.pathname.startsWith("/f/")
@@ -230,5 +268,12 @@ export default {
       console.error(JSON.stringify({ message: "unhandled error", error: String(err) }));
       return new Response("Internal error", { status: 500 });
     }
+  },
+  async scheduled(event, env, ctx): Promise<void> {
+    ctx.waitUntil(
+      cleanup(env).then((r) =>
+        console.log(JSON.stringify({ message: "scheduled cleanup", ...r })),
+      ),
+    );
   },
 } satisfies ExportedHandler<Env>;
