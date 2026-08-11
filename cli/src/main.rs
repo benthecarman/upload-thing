@@ -29,6 +29,12 @@ enum Commands {
         /// Full URL (https://.../f/<id>/<name>) or bare key (f/<id>/<name>)
         url_or_key: String,
     },
+    /// List uploaded files, newest first
+    List {
+        /// Print only URLs that match this regular expression
+        #[arg(long, value_name = "PATTERN")]
+        regex: Option<String>,
+    },
 }
 
 fn mime_from_ext(filename: &str) -> &'static str {
@@ -200,10 +206,51 @@ fn delete(url_or_key: String) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+fn list(pattern: Option<String>) -> Result<(), Box<dyn Error>> {
+    let client = Client::new();
+    let regex = pattern.as_deref().map(regex::Regex::new).transpose()?;
+    let mut cursor: Option<String> = None;
+    let mut files: Vec<(String, String)> = Vec::new();
+
+    loop {
+        let url = match cursor.as_deref() {
+            Some(cursor) => format!("{BASE_URL}/list?cursor={}", urlencode(cursor)),
+            None => format!("{BASE_URL}/list"),
+        };
+        let resp = client.get(url).bearer_auth(TOKEN).send()?;
+        let json: serde_json::Value = check_status(resp)?.json()?;
+        let objects = json["objects"]
+            .as_array()
+            .ok_or("unexpected response shape")?;
+
+        for object in objects {
+            let url = object["url"].as_str().ok_or("unexpected response shape")?;
+            let uploaded = object["uploaded"]
+                .as_str()
+                .ok_or("unexpected response shape")?;
+            if regex.as_ref().is_none_or(|regex| regex.is_match(url)) {
+                files.push((uploaded.to_owned(), url.to_owned()));
+            }
+        }
+
+        cursor = json["cursor"].as_str().map(str::to_owned);
+        if cursor.is_none() {
+            break;
+        }
+    }
+
+    files.sort_unstable_by(|a, b| b.0.cmp(&a.0));
+    for (_, url) in files {
+        println!("{url}");
+    }
+    Ok(())
+}
+
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
         Commands::Put { file, name } => put(file, name),
         Commands::Delete { url_or_key } => delete(url_or_key),
+        Commands::List { regex } => list(regex),
     }
 }

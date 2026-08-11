@@ -22,12 +22,20 @@ upload-thing put ./dist/app.tar.gz --name myapp-v1.2.tar.gz
 # Delete a file by its URL or its key.
 upload-thing delete https://files.benthecarman.dev/f/Ab3xK9/report.html
 upload-thing delete f/Ab3xK9/report.html
+
+# List all files. Prints one public URL per line, newest first.
+upload-thing list
+
+# List only URLs that match a regular expression.
+upload-thing list --regex '\.(html|pdf)$'
 ```
 
 ## Rules for agents
 
 - The last line of stdout from `put` is the public URL. Give this URL to the
   user.
+- Use `list --regex` to find files by URL, key, or filename. The CLI returns an
+  error if the regular expression is not valid.
 - Do not upload secrets, credentials, or private data. URLs are public and
   unguessable, but not protected.
 - Large files are uploaded in chunks automatically. There is no practical size

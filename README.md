@@ -23,6 +23,12 @@ upload-thing put ./build.tar.gz --name myapp-v1.2.tar.gz
 # Delete by URL or key
 upload-thing delete https://files.benthecarman.dev/f/Ab3xK9/report.html
 upload-thing delete f/Ab3xK9/report.html
+
+# List all uploaded files, newest first
+upload-thing list
+
+# List only URLs that match a regular expression
+upload-thing list --regex '\.(html|pdf)$'
 ```
 
 The binary is installed at `~/.cargo/bin/upload-thing`. Copy it to any machine
@@ -63,6 +69,7 @@ Old CLI binaries stop working once the secret is replaced.
 | Method | Path                        | Auth          | Result                    |
 |--------|-----------------------------|---------------|---------------------------|
 | PUT    | `/upload?filename=<name>`   | Bearer token  | `{ "url": ..., "key": ... }` |
+| GET    | `/list`                     | Bearer token  | `{ "objects": [...], "cursor": ... }` |
 | GET    | `/f/<id>/<name>`            | none          | file bytes, stored type   |
 | DELETE | `/delete?key=<key>`         | Bearer token  | `{ "deleted": ... }`      |
 | POST   | `/multipart/create`         | Bearer token  | `{ "key": ..., "uploadId": ... }` |

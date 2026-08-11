@@ -1,6 +1,7 @@
 // upload-thing: authenticated upload, public download file host backed by R2.
 //
 //   PUT    /upload?filename=<name>        (Bearer auth) -> { url, key }
+//   GET    /list                          (Bearer auth) -> { objects, cursor? }
 //   GET    /f/<id>/<name>                 (public)
 //   DELETE /delete?key=<key>              (Bearer auth)
 //
@@ -114,6 +115,30 @@ async function handleDelete(
   }
   await env.FILES.delete(key);
   return Response.json({ deleted: key });
+}
+
+async function handleList(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  if (!(await isAuthorized(request, env))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+
+  const cursor = url.searchParams.get("cursor") ?? undefined;
+  const page = await env.FILES.list({ cursor, limit: 1000, prefix: "f/" });
+  const objects = page.objects.map((object) => ({
+    key: object.key,
+    url: `${url.origin}/${object.key}`,
+    size: object.size,
+    uploaded: object.uploaded.toISOString(),
+  }));
+
+  return Response.json({
+    objects,
+    ...(page.truncated ? { cursor: page.cursor } : {}),
+  });
 }
 
 function newFileKey(url: URL): string {
@@ -244,6 +269,9 @@ export default {
       }
       if (request.method === "DELETE" && url.pathname === "/delete") {
         return await handleDelete(request, env, url);
+      }
+      if (request.method === "GET" && url.pathname === "/list") {
+        return await handleList(request, env, url);
       }
       if (request.method === "POST" && url.pathname === "/multipart/create") {
         return await handleMultipartCreate(request, env, url);
