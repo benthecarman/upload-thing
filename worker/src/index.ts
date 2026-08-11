@@ -9,6 +9,9 @@
 //   PUT    /multipart/part?key&uploadId&partNumber=N   (Bearer auth) -> { etag }
 //   POST   /multipart/complete            (Bearer auth, JSON body) -> { url, key }
 //   POST   /multipart/abort               (Bearer auth, JSON body) -> { aborted }
+//   GET    /favicon.ico                   (public)
+
+import FAVICON from "./favicon.ico";
 
 const ID_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -256,6 +259,17 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/cleanup") {
         return await handleCleanup(request, env);
+      }
+      if (
+        (request.method === "GET" || request.method === "HEAD") &&
+        url.pathname === "/favicon.ico"
+      ) {
+        return new Response(FAVICON, {
+          headers: {
+            "Content-Type": "image/x-icon",
+            "Cache-Control": "public, max-age=86400",
+          },
+        });
       }
       if (
         (request.method === "GET" || request.method === "HEAD") &&
