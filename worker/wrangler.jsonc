@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "upload-thing",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-08-11",
+  "observability": {
+    "enabled": true
+  },
+  "r2_buckets": [
+    { "binding": "FILES", "bucket_name": "upload-thing-files" }
+  ],
+  "routes": [
+    { "pattern": "files.benthecarman.dev", "custom_domain": true }
+  ]
+}

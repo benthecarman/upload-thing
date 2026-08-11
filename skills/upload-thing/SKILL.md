@@ -1,0 +1,37 @@
+---
+name: upload-thing
+description: Upload files to the user's public file host (files.benthecarman.dev) with the `upload-thing` CLI. Use when the user or agent needs to share a build artifact, an HTML page, a report, or any file through a public URL. The token is baked into the binary; no environment variables are necessary.
+---
+
+# upload-thing
+
+`upload-thing` is a CLI that uploads files to the user's Cloudflare file host
+and prints a public URL. Uploads are authenticated by a token that is baked
+into the binary. Downloads are public. Anyone who has the URL can view the
+file.
+
+## Commands
+
+```sh
+# Upload a file. Prints the public URL to stdout.
+upload-thing put ./report.html
+
+# Upload with a different name in the URL.
+upload-thing put ./dist/app.tar.gz --name myapp-v1.2.tar.gz
+
+# Delete a file by its URL or its key.
+upload-thing delete https://files.benthecarman.dev/f/Ab3xK9/report.html
+upload-thing delete f/Ab3xK9/report.html
+```
+
+## Rules for agents
+
+- The last line of stdout from `put` is the public URL. Give this URL to the
+  user.
+- Do not upload secrets, credentials, or private data. URLs are public and
+  unguessable, but not protected.
+- The size limit is approximately 100 MB for each file.
+- Files stay on the host until you delete them. Delete temporary files when
+  they are not necessary anymore.
+- If the binary is missing, tell the user to run
+  `cargo install --path cli` in `~/projects/upload-thing`.
