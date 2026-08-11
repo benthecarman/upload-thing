@@ -78,22 +78,112 @@ fn check_status(resp: reqwest::blocking::Response) -> Result<reqwest::blocking::
     }
 }
 
+/// Files larger than this are uploaded in chunks through the multipart
+/// endpoints, because the Cloudflare zone rejects single requests over ~100 MB.
+const MULTIPART_THRESHOLD: u64 = 90 * 1024 * 1024;
+/// Chunk size for multipart uploads. Must be >= 5 MiB (R2 minimum part size).
+const CHUNK_SIZE: u64 = 50 * 1024 * 1024;
+
 fn put(file: PathBuf, name: Option<String>) -> Result<(), Box<dyn Error>> {
     let filename = name
         .or_else(|| file.file_name().map(|n| n.to_string_lossy().into_owned()))
         .ok_or("could not determine filename; pass --name")?;
-    let bytes = std::fs::read(&file)?;
-    let resp = Client::new()
-        .put(format!("{BASE_URL}/upload?filename={}", urlencode(&filename)))
-        .bearer_auth(TOKEN)
-        .header(CONTENT_TYPE, mime_from_ext(&filename))
-        .body(bytes)
-        .send()?;
-    let resp = check_status(resp)?;
-    let json: serde_json::Value = resp.json()?;
-    let url = json["url"].as_str().ok_or("unexpected response shape")?;
+    let size = std::fs::metadata(&file)?.len();
+    let client = Client::new();
+    let content_type = mime_from_ext(&filename);
+
+    let url = if size <= MULTIPART_THRESHOLD {
+        let bytes = std::fs::read(&file)?;
+        let resp = client
+            .put(format!("{BASE_URL}/upload?filename={}", urlencode(&filename)))
+            .bearer_auth(TOKEN)
+            .header(CONTENT_TYPE, content_type)
+            .body(bytes)
+            .send()?;
+        let json: serde_json::Value = check_status(resp)?.json()?;
+        json["url"].as_str().ok_or("unexpected response shape")?.to_owned()
+    } else {
+        put_multipart(&client, &file, &filename, size, content_type)?
+    };
     println!("{url}");
     Ok(())
+}
+
+fn put_multipart(
+    client: &Client,
+    file: &PathBuf,
+    filename: &str,
+    size: u64,
+    content_type: &str,
+) -> Result<String, Box<dyn Error>> {
+    let resp = client
+        .post(format!(
+            "{BASE_URL}/multipart/create?filename={}",
+            urlencode(filename)
+        ))
+        .bearer_auth(TOKEN)
+        .header(CONTENT_TYPE, content_type)
+        .send()?;
+    let json: serde_json::Value = check_status(resp)?.json()?;
+    let key = json["key"].as_str().ok_or("unexpected response shape")?;
+    let upload_id = json["uploadId"]
+        .as_str()
+        .ok_or("unexpected response shape")?;
+
+    let result = upload_parts(client, file, key, upload_id, size);
+    if result.is_err() {
+        let _ = client
+            .post(format!("{BASE_URL}/multipart/abort"))
+            .bearer_auth(TOKEN)
+            .json(&serde_json::json!({ "key": key, "uploadId": upload_id }))
+            .send();
+    }
+    let parts = result?;
+
+    let resp = client
+        .post(format!("{BASE_URL}/multipart/complete"))
+        .bearer_auth(TOKEN)
+        .json(&serde_json::json!({ "key": key, "uploadId": upload_id, "parts": parts }))
+        .send()?;
+    let json: serde_json::Value = check_status(resp)?.json()?;
+    Ok(json["url"]
+        .as_str()
+        .ok_or("unexpected response shape")?
+        .to_owned())
+}
+
+fn upload_parts(
+    client: &Client,
+    file: &PathBuf,
+    key: &str,
+    upload_id: &str,
+    size: u64,
+) -> Result<Vec<serde_json::Value>, Box<dyn Error>> {
+    use std::io::{Read, Seek, SeekFrom};
+    let mut f = std::fs::File::open(file)?;
+    let total_parts = size.div_ceil(CHUNK_SIZE);
+    let mut parts = Vec::new();
+    for n in 1..=total_parts {
+        f.seek(SeekFrom::Start((n - 1) * CHUNK_SIZE))?;
+        let len = CHUNK_SIZE.min(size - (n - 1) * CHUNK_SIZE) as usize;
+        let mut buf = vec![0u8; len];
+        f.read_exact(&mut buf)?;
+        eprintln!("uploading part {n}/{total_parts} ({len} bytes)");
+        let resp = client
+            .put(format!(
+                "{BASE_URL}/multipart/part?key={}&uploadId={}&partNumber={n}",
+                urlencode(key),
+                urlencode(upload_id)
+            ))
+            .bearer_auth(TOKEN)
+            .header(CONTENT_TYPE, "application/octet-stream")
+            .body(buf)
+            .send()?;
+        let json: serde_json::Value = check_status(resp)?.json()?;
+        let etag = json["etag"].as_str().ok_or("unexpected response shape")?;
+        parts.push(serde_json::json!({ "partNumber": n, "etag": etag }));
+    }
+    Ok(parts)
 }
 
 fn delete(url_or_key: String) -> Result<(), Box<dyn Error>> {

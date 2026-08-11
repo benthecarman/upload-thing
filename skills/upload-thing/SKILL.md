@@ -30,7 +30,8 @@ upload-thing delete f/Ab3xK9/report.html
   user.
 - Do not upload secrets, credentials, or private data. URLs are public and
   unguessable, but not protected.
-- The size limit is approximately 100 MB for each file.
+- Large files are uploaded in chunks automatically. There is no practical size
+  limit (R2 allows up to 5 TiB for each object).
 - Files stay on the host until you delete them. Delete temporary files when
   they are not necessary anymore.
 - If the binary is missing, tell the user to run

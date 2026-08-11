@@ -1,8 +1,14 @@
 // upload-thing: authenticated upload, public download file host backed by R2.
 //
-//   PUT    /upload?filename=<name>   (Bearer auth) -> { url, key }
-//   GET    /f/<id>/<name>            (public)
-//   DELETE /delete?key=<key>         (Bearer auth)
+//   PUT    /upload?filename=<name>        (Bearer auth) -> { url, key }
+//   GET    /f/<id>/<name>                 (public)
+//   DELETE /delete?key=<key>              (Bearer auth)
+//
+// Multipart uploads (for files over the ~100 MB zone request limit):
+//   POST   /multipart/create?filename=<>  (Bearer auth) -> { key, uploadId }
+//   PUT    /multipart/part?key&uploadId&partNumber=N   (Bearer auth) -> { etag }
+//   POST   /multipart/complete            (Bearer auth, JSON body) -> { url, key }
+//   POST   /multipart/abort               (Bearer auth, JSON body) -> { aborted }
 
 const ID_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -107,6 +113,90 @@ async function handleDelete(
   return Response.json({ deleted: key });
 }
 
+function newFileKey(url: URL): string {
+  const filename = sanitizeFilename(url.searchParams.get("filename") ?? "file");
+  return `f/${randomId(8)}/${filename}`;
+}
+
+async function handleMultipartCreate(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  if (!(await isAuthorized(request, env))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const key = newFileKey(url);
+  const contentType =
+    request.headers.get("Content-Type") ??
+    guessContentType(key.split("/").pop() ?? "");
+  const upload = await env.FILES.createMultipartUpload(key, {
+    httpMetadata: { contentType },
+  });
+  return Response.json({ key, uploadId: upload.uploadId });
+}
+
+async function handleMultipartPart(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  if (!(await isAuthorized(request, env))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  if (!request.body) {
+    return new Response("Missing request body", { status: 400 });
+  }
+  const key = url.searchParams.get("key") ?? "";
+  const uploadId = url.searchParams.get("uploadId") ?? "";
+  const partNumber = parseInt(url.searchParams.get("partNumber") ?? "", 10);
+  if (!key.startsWith("f/") || !uploadId || !(partNumber >= 1)) {
+    return new Response("Invalid key, uploadId, or partNumber", { status: 400 });
+  }
+  const upload = env.FILES.resumeMultipartUpload(key, uploadId);
+  const part = await upload.uploadPart(partNumber, request.body);
+  return Response.json({ etag: part.etag });
+}
+
+interface MultipartBody {
+  key?: string;
+  uploadId?: string;
+  parts?: { partNumber: number; etag: string }[];
+}
+
+async function handleMultipartComplete(
+  request: Request,
+  env: Env,
+  url: URL,
+): Promise<Response> {
+  if (!(await isAuthorized(request, env))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const body: MultipartBody = await request.json();
+  if (!body.key?.startsWith("f/") || !body.uploadId || !body.parts?.length) {
+    return new Response("Invalid body", { status: 400 });
+  }
+  const upload = env.FILES.resumeMultipartUpload(body.key, body.uploadId);
+  await upload.complete(body.parts);
+  return Response.json({ url: `${url.origin}/${body.key}`, key: body.key });
+}
+
+async function handleMultipartAbort(
+  request: Request,
+  env: Env,
+): Promise<Response> {
+  if (!(await isAuthorized(request, env))) {
+    return new Response("Unauthorized", { status: 401 });
+  }
+  const body: MultipartBody = await request.json();
+  if (!body.key?.startsWith("f/") || !body.uploadId) {
+    return new Response("Invalid body", { status: 400 });
+  }
+  const upload = env.FILES.resumeMultipartUpload(body.key, body.uploadId);
+  await upload.abort();
+  return Response.json({ aborted: body.key });
+}
+
 export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
@@ -116,6 +206,18 @@ export default {
       }
       if (request.method === "DELETE" && url.pathname === "/delete") {
         return await handleDelete(request, env, url);
+      }
+      if (request.method === "POST" && url.pathname === "/multipart/create") {
+        return await handleMultipartCreate(request, env, url);
+      }
+      if (request.method === "PUT" && url.pathname === "/multipart/part") {
+        return await handleMultipartPart(request, env, url);
+      }
+      if (request.method === "POST" && url.pathname === "/multipart/complete") {
+        return await handleMultipartComplete(request, env, url);
+      }
+      if (request.method === "POST" && url.pathname === "/multipart/abort") {
+        return await handleMultipartAbort(request, env);
       }
       if (
         (request.method === "GET" || request.method === "HEAD") &&

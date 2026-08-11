@@ -65,6 +65,14 @@ Old CLI binaries stop working once the secret is replaced.
 | PUT    | `/upload?filename=<name>`   | Bearer token  | `{ "url": ..., "key": ... }` |
 | GET    | `/f/<id>/<name>`            | none          | file bytes, stored type   |
 | DELETE | `/delete?key=<key>`         | Bearer token  | `{ "deleted": ... }`      |
+| POST   | `/multipart/create`         | Bearer token  | `{ "key": ..., "uploadId": ... }` |
+| PUT    | `/multipart/part`           | Bearer token  | `{ "etag": ... }`         |
+| POST   | `/multipart/complete`       | Bearer token  | `{ "url": ..., "key": ... }` |
+| POST   | `/multipart/abort`          | Bearer token  | `{ "aborted": ... }`      |
+
+Single-request uploads are limited to ~100 MB by the Cloudflare zone. The CLI
+uploads larger files in 50 MB chunks through the multipart endpoints, so files
+of 500 MB and more work (R2 allows up to 5 TiB per object).
 
 ## Cost
 
