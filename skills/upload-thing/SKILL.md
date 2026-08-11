@@ -1,6 +1,6 @@
 ---
 name: upload-thing
-description: Upload files to the user's public file host (files.benthecarman.dev) with the `upload-thing` CLI. Use when the user or agent needs to share a build artifact, an HTML page, a report, or any file through a public URL. The token is baked into the binary; no environment variables are necessary.
+description: Use when the user or agent needs to share a build artifact, an HTML page, a report, or any file through a public URL
 ---
 
 # upload-thing
