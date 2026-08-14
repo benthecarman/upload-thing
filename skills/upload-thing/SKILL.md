@@ -1,46 +1,56 @@
 ---
 name: upload-thing
-description: Use when the user or agent needs to share a build artifact, an HTML page, a report, or any file through a public URL
+description: Upload and share build artifacts, HTML pages, reports, or other files through either a public URL or a private URL protected by Cloudflare Access. Use when Codex needs to give the user a downloadable or viewable file.
 ---
 
 # upload-thing
 
-`upload-thing` is a CLI that uploads files to the user's Cloudflare file host
-and prints a public URL. Uploads are authenticated by a token that is baked
-into the binary. Downloads are public. Anyone who has the URL can view the
-file.
+Use the `upload-thing` CLI to upload a file.
 
 ## Commands
 
 ```sh
-# Upload a file. Prints the public URL to stdout.
+# Upload a public file. Print the public URL.
 upload-thing put ./report.html
 
-# Upload with a different name in the URL.
+# Upload a private file. Cloudflare Access protects the URL.
+upload-thing put ./report.html --private
+
+# Use a different filename in the URL.
 upload-thing put ./dist/app.tar.gz --name myapp-v1.2.tar.gz
 
-# Delete a file by its URL or its key.
+# Delete a public or private file by URL or key.
 upload-thing delete https://files.benthecarman.dev/f/Ab3xK9/report.html
-upload-thing delete f/Ab3xK9/report.html
+upload-thing delete https://files.benthecarman.dev/private/Ab3xK9/report.html
 
-# List all files. Prints one public URL per line, newest first.
+# List public files.
 upload-thing list
 
-# List only URLs that match a regular expression.
+# List private files.
+upload-thing list --private
+
+# Filter either list with a regular expression.
 upload-thing list --regex '\.(html|pdf)$'
+upload-thing list --private --regex '\.(html|pdf)$'
 ```
 
-## Rules for agents
+## Rules
 
-- The last line of stdout from `put` is the public URL. Give this URL to the
+- Treat the last line of `put` output as the file URL. Give this URL to the
   user.
-- Use `list --regex` to find files by URL, key, or filename. The CLI returns an
-  error if the regular expression is not valid.
-- Do not upload secrets, credentials, or private data. URLs are public and
-  unguessable, but not protected.
-- Large files are uploaded in chunks automatically. There is no practical size
-  limit (R2 allows up to 5 TiB for each object).
-- Files stay on the host until you delete them. Delete temporary files when
-  they are not necessary anymore.
-- If the binary is missing, tell the user to run
-  `cargo install --path cli` in `~/projects/upload-thing`.
+- Use a public upload only when the user requests public access or the file is
+  safe for anyone with the URL.
+- Use `--private` when the file contains restricted information or when public
+  access is not clearly acceptable.
+- Tell the user that a private URL requires login to the owner's Cloudflare
+  account.
+- Check a private URL before you give it to the user. An unauthenticated request
+  must redirect to Cloudflare Access. If it returns `503`, delete the upload and
+  report that Access is not configured.
+- Never upload passwords, API keys, authentication tokens, credentials, or
+  other secrets. A private URL is access-controlled storage, not a secret
+  manager.
+- Use `list --regex` to find files by URL, key, or filename. Add `--private`
+  to search private files.
+- Let the CLI upload large files in chunks automatically.
+- Delete temporary files when the user no longer needs them.

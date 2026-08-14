@@ -1,8 +1,10 @@
 // upload-thing: authenticated upload, public download file host backed by R2.
 //
 //   PUT    /upload?filename=<name>        (Bearer auth) -> { url, key }
+//          Add private=true to create a Cloudflare Access-protected URL.
 //   GET    /list                          (Bearer auth) -> { objects, cursor? }
 //   GET    /f/<id>/<name>                 (public)
+//   GET    /private/<id>/<name>           (Cloudflare Access)
 //   DELETE /delete?key=<key>              (Bearer auth)
 //
 // Multipart uploads (for files over the ~100 MB zone request limit):
@@ -13,6 +15,68 @@
 //   GET    /favicon.ico                   (public)
 
 import FAVICON from "./favicon.ico";
+import { createRemoteJWKSet, jwtVerify } from "jose";
+
+const LANDING_PAGE = `<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Upload Thing</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: ui-monospace, "Cascadia Code", "Source Code Pro", monospace;
+        background: #0b0d10;
+        color: #f2f4f7;
+      }
+      * { box-sizing: border-box; }
+      body {
+        min-height: 100vh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        padding: 2rem;
+      }
+      main {
+        width: min(42rem, 100%);
+        border: 1px solid #2a3038;
+        border-radius: 1rem;
+        padding: clamp(2rem, 8vw, 4rem);
+        background: #11151a;
+        box-shadow: 0 1.5rem 5rem #0008;
+      }
+      p {
+        margin: 0 0 1rem;
+        color: #7dd3fc;
+        font-size: 0.875rem;
+      }
+      h1 {
+        margin: 0;
+        font-size: clamp(2rem, 8vw, 4rem);
+        line-height: 1;
+        letter-spacing: -0.06em;
+      }
+      footer {
+        margin-top: 2rem;
+        color: #89929f;
+        font-size: 0.875rem;
+      }
+      a { color: #7dd3fc; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <p>HTTP 200</p>
+      <h1>Upload Thing</h1>
+      <footer>
+        A small file host built on Cloudflare Workers and R2.
+        <a href="https://github.com/benthecarman/upload-thing">View the source on GitHub</a>.
+      </footer>
+    </main>
+  </body>
+</html>`;
 
 const ID_ALPHABET =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
@@ -79,7 +143,7 @@ async function handleUpload(
     return new Response("Missing request body", { status: 400 });
   }
   const filename = sanitizeFilename(url.searchParams.get("filename") ?? "file");
-  const key = `f/${randomId(8)}/${filename}`;
+  const key = newFileKey(url);
   const contentType =
     request.headers.get("Content-Type") ?? guessContentType(filename);
   await env.FILES.put(key, request.body, {
@@ -88,7 +152,57 @@ async function handleUpload(
   return Response.json({ url: `${url.origin}/${key}`, key });
 }
 
-async function handleGet(env: Env, url: URL): Promise<Response> {
+async function authorizePrivateDownload(
+  request: Request,
+  env: Env,
+): Promise<Response | null> {
+  if (!env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD) {
+    console.error(
+      JSON.stringify({ message: "Cloudflare Access is not configured" }),
+    );
+    return new Response("Private downloads are not configured", { status: 503 });
+  }
+
+  const token = request.headers.get("Cf-Access-Jwt-Assertion");
+  if (!token) {
+    return new Response("Cloudflare Access authentication required", {
+      status: 401,
+    });
+  }
+
+  try {
+    const teamDomain = new URL(env.ACCESS_TEAM_DOMAIN);
+    const jwks = createRemoteJWKSet(
+      new URL("/cdn-cgi/access/certs", teamDomain),
+    );
+    await jwtVerify(token, jwks, {
+      issuer: teamDomain.origin,
+      audience: env.ACCESS_AUD,
+    });
+    return null;
+  } catch (error) {
+    console.warn(
+      JSON.stringify({
+        message: "Cloudflare Access JWT validation failed",
+        error: error instanceof Error ? error.message : String(error),
+      }),
+    );
+    return new Response("Invalid Cloudflare Access authentication", {
+      status: 403,
+    });
+  }
+}
+
+async function handleGet(
+  request: Request,
+  env: Env,
+  url: URL,
+  isPrivate: boolean,
+): Promise<Response> {
+  if (isPrivate) {
+    const denied = await authorizePrivateDownload(request, env);
+    if (denied) return denied;
+  }
   const key = url.pathname.slice(1);
   const object = await env.FILES.get(key);
   if (!object) {
@@ -97,7 +211,11 @@ async function handleGet(env: Env, url: URL): Promise<Response> {
   const headers = new Headers();
   object.writeHttpMetadata(headers);
   headers.set("etag", object.httpEtag);
-  headers.set("Cache-Control", "public, max-age=3600");
+  headers.set(
+    "Cache-Control",
+    isPrivate ? "private, no-store" : "public, max-age=3600",
+  );
+  headers.set("X-Content-Type-Options", "nosniff");
   return new Response(object.body, { headers });
 }
 
@@ -110,7 +228,7 @@ async function handleDelete(
     return new Response("Unauthorized", { status: 401 });
   }
   const key = url.searchParams.get("key") ?? "";
-  if (!key.startsWith("f/")) {
+  if (!isFileKey(key)) {
     return new Response("Invalid key", { status: 400 });
   }
   await env.FILES.delete(key);
@@ -127,7 +245,8 @@ async function handleList(
   }
 
   const cursor = url.searchParams.get("cursor") ?? undefined;
-  const page = await env.FILES.list({ cursor, limit: 1000, prefix: "f/" });
+  const prefix = url.searchParams.get("private") === "true" ? "private/" : "f/";
+  const page = await env.FILES.list({ cursor, limit: 1000, prefix });
   const objects = page.objects.map((object) => ({
     key: object.key,
     url: `${url.origin}/${object.key}`,
@@ -143,7 +262,12 @@ async function handleList(
 
 function newFileKey(url: URL): string {
   const filename = sanitizeFilename(url.searchParams.get("filename") ?? "file");
-  return `f/${randomId(8)}/${filename}`;
+  const prefix = url.searchParams.get("private") === "true" ? "private" : "f";
+  return `${prefix}/${randomId(8)}/${filename}`;
+}
+
+function isFileKey(key: string): boolean {
+  return key.startsWith("f/") || key.startsWith("private/");
 }
 
 async function handleMultipartCreate(
@@ -178,7 +302,7 @@ async function handleMultipartPart(
   const key = url.searchParams.get("key") ?? "";
   const uploadId = url.searchParams.get("uploadId") ?? "";
   const partNumber = parseInt(url.searchParams.get("partNumber") ?? "", 10);
-  if (!key.startsWith("f/") || !uploadId || !(partNumber >= 1)) {
+  if (!isFileKey(key) || !uploadId || !(partNumber >= 1)) {
     return new Response("Invalid key, uploadId, or partNumber", { status: 400 });
   }
   const upload = env.FILES.resumeMultipartUpload(key, uploadId);
@@ -201,7 +325,7 @@ async function handleMultipartComplete(
     return new Response("Unauthorized", { status: 401 });
   }
   const body: MultipartBody = await request.json();
-  if (!body.key?.startsWith("f/") || !body.uploadId || !body.parts?.length) {
+  if (!body.key || !isFileKey(body.key) || !body.uploadId || !body.parts?.length) {
     return new Response("Invalid body", { status: 400 });
   }
   const upload = env.FILES.resumeMultipartUpload(body.key, body.uploadId);
@@ -217,7 +341,7 @@ async function handleMultipartAbort(
     return new Response("Unauthorized", { status: 401 });
   }
   const body: MultipartBody = await request.json();
-  if (!body.key?.startsWith("f/") || !body.uploadId) {
+  if (!body.key || !isFileKey(body.key) || !body.uploadId) {
     return new Response("Invalid body", { status: 400 });
   }
   const upload = env.FILES.resumeMultipartUpload(body.key, body.uploadId);
@@ -264,6 +388,18 @@ export default {
   async fetch(request, env, ctx): Promise<Response> {
     const url = new URL(request.url);
     try {
+      if (
+        (request.method === "GET" || request.method === "HEAD") &&
+        url.pathname === "/"
+      ) {
+        return new Response(request.method === "HEAD" ? null : LANDING_PAGE, {
+          headers: {
+            "Content-Type": "text/html; charset=utf-8",
+            "Cache-Control": "public, max-age=3600",
+            "X-Content-Type-Options": "nosniff",
+          },
+        });
+      }
       if (request.method === "PUT" && url.pathname === "/upload") {
         return await handleUpload(request, env, url);
       }
@@ -303,7 +439,13 @@ export default {
         (request.method === "GET" || request.method === "HEAD") &&
         url.pathname.startsWith("/f/")
       ) {
-        return await handleGet(env, url);
+        return await handleGet(request, env, url, false);
+      }
+      if (
+        (request.method === "GET" || request.method === "HEAD") &&
+        url.pathname.startsWith("/private/")
+      ) {
+        return await handleGet(request, env, url, true);
       }
       return new Response("Not found", { status: 404 });
     } catch (err) {

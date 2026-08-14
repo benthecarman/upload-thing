@@ -2,14 +2,19 @@
   "name": "upload-thing-worker",
   "private": true,
   "scripts": {
+    "check": "npm run types -- --check && tsc",
     "deploy": "wrangler deploy",
-    "types": "wrangler types"
+    "types": "wrangler types --env-file .dev.vars.example"
   },
   "devDependencies": {
+    "typescript": "^5.9.2",
     "wrangler": "^4.0.0"
   },
   "allowScripts": {
     "esbuild@0.28.1": true,
     "workerd@1.20260804.1": true
+  },
+  "dependencies": {
+    "jose": "^6.2.8"
   }
 }

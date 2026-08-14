@@ -1,0 +1,3 @@
+UPLOAD_TOKEN=local-development-token
+ACCESS_TEAM_DOMAIN=https://example.cloudflareaccess.com
+ACCESS_AUD=replace-with-access-audience-tag

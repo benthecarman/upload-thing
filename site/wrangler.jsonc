@@ -1,0 +1,13 @@
+{
+  "$schema": "../worker/node_modules/wrangler/config-schema.json",
+  "name": "benthecarman-site",
+  "compatibility_date": "2026-08-11",
+  "assets": {
+    "directory": "./public",
+    "html_handling": "auto-trailing-slash",
+    "not_found_handling": "404-page"
+  },
+  "routes": [
+    { "pattern": "benthecarman.dev", "custom_domain": true }
+  ]
+}

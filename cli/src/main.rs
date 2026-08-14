@@ -8,7 +8,10 @@ const TOKEN: &str = env!("UPLOAD_TOKEN");
 const BASE_URL: &str = env!("UPLOAD_BASE_URL");
 
 #[derive(Parser)]
-#[command(name = "upload-thing", about = "Upload files to the upload-thing host and get a public URL")]
+#[command(
+    name = "upload-thing",
+    about = "Upload files and get public or private URLs"
+)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -16,13 +19,16 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Upload a file and print its public URL
+    /// Upload a file and print its URL
     Put {
         /// File to upload
         file: PathBuf,
         /// Override the filename used in the URL
         #[arg(long)]
         name: Option<String>,
+        /// Require Cloudflare Access login to download the file
+        #[arg(long)]
+        private: bool,
     },
     /// Delete a previously uploaded file by URL or key
     Delete {
@@ -34,11 +40,18 @@ enum Commands {
         /// Print only URLs that match this regular expression
         #[arg(long, value_name = "PATTERN")]
         regex: Option<String>,
+        /// List private files instead of public files
+        #[arg(long)]
+        private: bool,
     },
 }
 
 fn mime_from_ext(filename: &str) -> &'static str {
-    let ext = filename.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    let ext = filename
+        .rsplit('.')
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
     match ext.as_str() {
         "html" | "htm" => "text/html; charset=utf-8",
         "css" => "text/css; charset=utf-8",
@@ -74,7 +87,9 @@ fn urlencode(s: &str) -> String {
     out
 }
 
-fn check_status(resp: reqwest::blocking::Response) -> Result<reqwest::blocking::Response, Box<dyn Error>> {
+fn check_status(
+    resp: reqwest::blocking::Response,
+) -> Result<reqwest::blocking::Response, Box<dyn Error>> {
     if resp.status().is_success() {
         Ok(resp)
     } else {
@@ -90,7 +105,7 @@ const MULTIPART_THRESHOLD: u64 = 90 * 1024 * 1024;
 /// Chunk size for multipart uploads. Must be >= 5 MiB (R2 minimum part size).
 const CHUNK_SIZE: u64 = 50 * 1024 * 1024;
 
-fn put(file: PathBuf, name: Option<String>) -> Result<(), Box<dyn Error>> {
+fn put(file: PathBuf, name: Option<String>, private: bool) -> Result<(), Box<dyn Error>> {
     let filename = name
         .or_else(|| file.file_name().map(|n| n.to_string_lossy().into_owned()))
         .ok_or("could not determine filename; pass --name")?;
@@ -100,16 +115,23 @@ fn put(file: PathBuf, name: Option<String>) -> Result<(), Box<dyn Error>> {
 
     let url = if size <= MULTIPART_THRESHOLD {
         let bytes = std::fs::read(&file)?;
+        let private_query = if private { "&private=true" } else { "" };
         let resp = client
-            .put(format!("{BASE_URL}/upload?filename={}", urlencode(&filename)))
+            .put(format!(
+                "{BASE_URL}/upload?filename={}{private_query}",
+                urlencode(&filename)
+            ))
             .bearer_auth(TOKEN)
             .header(CONTENT_TYPE, content_type)
             .body(bytes)
             .send()?;
         let json: serde_json::Value = check_status(resp)?.json()?;
-        json["url"].as_str().ok_or("unexpected response shape")?.to_owned()
+        json["url"]
+            .as_str()
+            .ok_or("unexpected response shape")?
+            .to_owned()
     } else {
-        put_multipart(&client, &file, &filename, size, content_type)?
+        put_multipart(&client, &file, &filename, size, content_type, private)?
     };
     println!("{url}");
     Ok(())
@@ -121,11 +143,13 @@ fn put_multipart(
     filename: &str,
     size: u64,
     content_type: &str,
+    private: bool,
 ) -> Result<String, Box<dyn Error>> {
+    let private_query = if private { "&private=true" } else { "" };
     let resp = client
         .post(format!(
-            "{BASE_URL}/multipart/create?filename={}",
-            urlencode(filename)
+            "{BASE_URL}/multipart/create?filename={}{private_query}",
+            urlencode(filename),
         ))
         .bearer_auth(TOKEN)
         .header(CONTENT_TYPE, content_type)
@@ -206,16 +230,24 @@ fn delete(url_or_key: String) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn list(pattern: Option<String>) -> Result<(), Box<dyn Error>> {
+fn list(pattern: Option<String>, private: bool) -> Result<(), Box<dyn Error>> {
     let client = Client::new();
     let regex = pattern.as_deref().map(regex::Regex::new).transpose()?;
     let mut cursor: Option<String> = None;
     let mut files: Vec<(String, String)> = Vec::new();
 
     loop {
+        let visibility_query = if private {
+            "private=true"
+        } else {
+            "private=false"
+        };
         let url = match cursor.as_deref() {
-            Some(cursor) => format!("{BASE_URL}/list?cursor={}", urlencode(cursor)),
-            None => format!("{BASE_URL}/list"),
+            Some(cursor) => format!(
+                "{BASE_URL}/list?{visibility_query}&cursor={}",
+                urlencode(cursor)
+            ),
+            None => format!("{BASE_URL}/list?{visibility_query}"),
         };
         let resp = client.get(url).bearer_auth(TOKEN).send()?;
         let json: serde_json::Value = check_status(resp)?.json()?;
@@ -249,8 +281,12 @@ fn list(pattern: Option<String>) -> Result<(), Box<dyn Error>> {
 fn main() -> Result<(), Box<dyn Error>> {
     let cli = Cli::parse();
     match cli.command {
-        Commands::Put { file, name } => put(file, name),
+        Commands::Put {
+            file,
+            name,
+            private,
+        } => put(file, name, private),
         Commands::Delete { url_or_key } => delete(url_or_key),
-        Commands::List { regex } => list(regex),
+        Commands::List { regex, private } => list(regex, private),
     }
 }

@@ -4,3 +4,4 @@ target/
 cli/.env
 worker/.cf-token
 worker/worker-configuration.d.ts
+worker/.dev.vars

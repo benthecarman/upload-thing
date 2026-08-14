@@ -13,7 +13,7 @@
     "crons": ["43 * * * *"]
   },
   "rules": [
-    { "type": "Data", "globs": ["**/*.ico"] }
+    { "type": "Data", "globs": ["**/*.ico"], "fallthrough": false }
   ],
   "r2_buckets": [
     { "binding": "FILES", "bucket_name": "upload-thing-files" }

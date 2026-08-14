@@ -1,8 +1,8 @@
 # upload-thing
 
-A small, near-free file host on Cloudflare. Uploads require a bearer token;
-downloads/views are public. Files are served at
-`https://files.benthecarman.dev/f/<id>/<filename>`.
+A small, near-free file host on Cloudflare. Uploads require a bearer token.
+Public files use `/f/<id>/<filename>`. Private files use
+`/private/<id>/<filename>` and require a Cloudflare Access login.
 
 ## Parts
 
@@ -20,12 +20,18 @@ upload-thing put ./report.html
 # Upload with a different filename in the URL
 upload-thing put ./build.tar.gz --name myapp-v1.2.tar.gz
 
+# Upload a private file
+upload-thing put ./report.html --private
+
 # Delete by URL or key
 upload-thing delete https://files.benthecarman.dev/f/Ab3xK9/report.html
 upload-thing delete f/Ab3xK9/report.html
 
 # List all uploaded files, newest first
 upload-thing list
+
+# List private files, newest first
+upload-thing list --private
 
 # List only URLs that match a regular expression
 upload-thing list --regex '\.(html|pdf)$'
@@ -64,19 +70,57 @@ cargo install --path cli
 
 Old CLI binaries stop working once the secret is replaced.
 
+## Private download setup
+
+Use Cloudflare Access to protect private file URLs. Public file URLs stay
+available without a login.
+
+1. Open **Cloudflare Zero Trust** in the Cloudflare dashboard. Complete the
+   initial setup if Cloudflare asks you to create a team.
+2. Go to **Integrations > Identity providers**. Select **Cloudflare**. Turn on
+   **Restrict to account members**.
+3. Go to **Access controls > Applications**. Create a **Self-hosted**
+   application for `files.benthecarman.dev/private/*`.
+4. Add an Allow policy. Use **Cloudflare Account Member** as the Include rule.
+   Select the current account.
+5. Copy the application **Audience (AUD) Tag**. Also note the team domain. The
+   team domain has the form `https://<team>.cloudflareaccess.com`.
+6. Add both values to the Worker. Wrangler prompts for each value.
+
+```sh
+cd worker
+npx wrangler secret put ACCESS_TEAM_DOMAIN
+npx wrangler secret put ACCESS_AUD
+npx wrangler deploy
+```
+
+Cloudflare Access checks the account policy before it sends the request to the
+Worker. The Worker also validates the Access JWT signature, issuer, and
+audience before it reads a private R2 object.
+
+For local Worker development, copy `worker/.dev.vars.example` to
+`worker/.dev.vars` and replace its values. Do not commit `.dev.vars`.
+
 ## HTTP API (for reference)
 
 | Method | Path                        | Auth          | Result                    |
 |--------|-----------------------------|---------------|---------------------------|
-| PUT    | `/upload?filename=<name>`   | Bearer token  | `{ "url": ..., "key": ... }` |
-| GET    | `/list`                     | Bearer token  | `{ "objects": [...], "cursor": ... }` |
-| GET    | `/f/<id>/<name>`            | none          | file bytes, stored type   |
-| DELETE | `/delete?key=<key>`         | Bearer token  | `{ "deleted": ... }`      |
-| POST   | `/multipart/create`         | Bearer token  | `{ "key": ..., "uploadId": ... }` |
-| PUT    | `/multipart/part`           | Bearer token  | `{ "etag": ... }`         |
-| POST   | `/multipart/complete`       | Bearer token  | `{ "url": ..., "key": ... }` |
-| POST   | `/multipart/abort`          | Bearer token  | `{ "aborted": ... }`      |
-| POST   | `/cleanup`                  | Bearer token  | `{ "totalBytes": ..., "deleted": ... }` |
+| PUT    | `/upload?filename=<name>`           | Bearer token       | `{ "url": ..., "key": ... }` |
+| PUT    | `/upload?filename=<name>&private=true` | Bearer token    | Private `{ "url": ..., "key": ... }` |
+| GET    | `/list`                             | Bearer token       | Public objects and cursor |
+| GET    | `/list?private=true`                | Bearer token       | Private objects and cursor |
+| GET    | `/f/<id>/<name>`                    | None               | File bytes and stored type |
+| GET    | `/private/<id>/<name>`              | Cloudflare Access  | File bytes and stored type |
+| DELETE | `/delete?key=<key>`                 | Bearer token       | `{ "deleted": ... }` |
+| POST   | `/multipart/create`                 | Bearer token       | `{ "key": ..., "uploadId": ... }` |
+| PUT    | `/multipart/part`                   | Bearer token       | `{ "etag": ... }` |
+| POST   | `/multipart/complete`               | Bearer token       | `{ "url": ..., "key": ... }` |
+| POST   | `/multipart/abort`                  | Bearer token       | `{ "aborted": ... }` |
+| POST   | `/cleanup`                          | Bearer token       | Cleanup result |
+
+Add `private=true` to `/multipart/create` to create a private multipart
+upload. The returned key keeps all later multipart requests in the correct
+namespace.
 
 Single-request uploads are limited to ~100 MB by the Cloudflare zone. The CLI
 uploads larger files in 50 MB chunks through the multipart endpoints, so files
