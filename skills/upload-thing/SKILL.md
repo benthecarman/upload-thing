@@ -1,6 +1,6 @@
 ---
 name: upload-thing
-description: Upload and share build artifacts, HTML pages, reports, or other files through either a public URL or a private URL protected by Cloudflare Access. Use when Codex needs to give the user a downloadable or viewable file.
+description: Upload and share build artifacts, HTML pages, reports, or other files through either a public URL or a private URL protected by Cloudflare Access. Use when the user needs to give the user a downloadable or viewable file.
 ---
 
 # upload-thing
